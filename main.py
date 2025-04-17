@@ -1,11 +1,21 @@
 from fastapi import FastAPI, UploadFile, File
 from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 from deepface import DeepFace
 import cv2
 import numpy as np
 import tempfile
 
 app = FastAPI()
+
+# ✅ Add CORS middleware (allowing all origins for now)
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["https://face-recognition-zpwh.onrender.com"],  # You can restrict this to your domain later
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 @app.post("/liveness")
 async def liveness(image: UploadFile = File(...)):
@@ -17,10 +27,12 @@ async def liveness(image: UploadFile = File(...)):
         if img is None:
             raise ValueError("Invalid image format")
 
+        # Save to temp file
         with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as temp:
             cv2.imwrite(temp.name, img)
             path = temp.name
 
+        # Run DeepFace with anti-spoofing
         results = DeepFace.extract_faces(
             img_path=path,
             detector_backend="opencv",
