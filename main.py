@@ -1,21 +1,27 @@
 from fastapi import FastAPI, UploadFile, File
 from fastapi.responses import JSONResponse
-from fastapi.middleware.cors import CORSMiddleware
-from deepface import DeepFace
 import cv2
 import numpy as np
 import tempfile
+import onnxruntime as ort
 
 app = FastAPI()
 
-# ✅ Add CORS middleware (allowing all origins for now)
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["https://face-recognition-zpwh.onrender.com"],  # You can restrict this to your domain later
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# Load ONNX model
+model_path = "liveness_model.onnx"
+session = ort.InferenceSession(model_path, providers=["CPUExecutionProvider"])
+input_name = session.get_inputs()[0].name
+
+# Preprocess for MobileNetV2 model
+
+def preprocess(img):
+    img = cv2.resize(img, (224, 224))
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+    img = img.astype(np.float32) / 255.0
+    img = (img - 0.5) / 0.5  # normalize to [-1, 1]
+    img = np.transpose(img, (2, 0, 1))  # CHW
+    img = np.expand_dims(img, axis=0)  # Batch dim
+    return img
 
 @app.post("/liveness")
 async def liveness(image: UploadFile = File(...)):
@@ -27,30 +33,21 @@ async def liveness(image: UploadFile = File(...)):
         if img is None:
             raise ValueError("Invalid image format")
 
-        # Save to temp file
-        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as temp:
-            cv2.imwrite(temp.name, img)
-            path = temp.name
+        # Preprocess and predict
+        input_tensor = preprocess(img)
+        output = session.run(None, {input_name: input_tensor})[0]
 
-        # Run DeepFace with anti-spoofing
-        results = DeepFace.extract_faces(
-            img_path=path,
-            detector_backend="opencv",
-            enforce_detection=True,
-            align=True,
-            anti_spoofing=True
-        )
+        exp_scores = np.exp(output[0])
+        probs = exp_scores / np.sum(exp_scores)
+        fake_prob, real_prob = probs[0], probs[1]
 
-        if not results:
-            return JSONResponse(status_code=400, content={"error": "No face detected"})
+        result = {
+            "result": "real" if real_prob > 0.8 else "fake",
+            "confidence": float(real_prob),
+            "spoof_score": float(fake_prob)
+        }
 
-        face = results[0]
-        return JSONResponse(content={
-            "is_real": face.get("is_real"),
-            "antispoof_score": face.get("antispoof_score"),
-            "confidence": face.get("confidence"),
-            "eye_distance": face.get("eye_distance")
-        })
+        return JSONResponse(content=result)
 
     except ValueError as ve:
         return JSONResponse(status_code=400, content={"error": str(ve)})
